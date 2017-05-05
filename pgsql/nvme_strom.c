@@ -28,6 +28,7 @@
 #include "optimizer/restrictinfo.h"
 #include "optimizer/subselect.h"
 #include "storage/buf_internals.h"
+#include "storage/ipc.h"
 #include "storage/predicate.h"
 #include "storage/smgr.h"
 #include "utils/guc.h"
@@ -39,13 +40,42 @@
 #include "utils/spccache.h"
 #include "utils/syscache.h"
 #include "nvme_strom.h"
+#include <numaif.h>
 #include <sched.h>
+#include <semaphore.h>
 #include <sys/ioctl.h>
+#include <sys/ipc.h>
 #include <sys/mman.h>
+#include <sys/shm.h>
 #include <unistd.h>
 
 PG_MODULE_MAGIC;
 void	_PG_init(void);
+
+/*
+ * NVMEStromDMAChunk
+ */
+typedef struct
+{
+	dlist_node			chain;
+	void			   *buffer;
+} NVMEStromDMAChunk;
+
+/*
+ * NVMEStromDMABuffer
+ */
+typedef struct
+{
+	sem_t				sem;	/* number of available chunks */
+	volatile slock_t	lock;	/* lock of the free_list */
+	dlist_head			free_list;
+	int					node_id;	/* id of NUMA node */
+	unsigned int		nr_chunks;	/* # of DMA chunks */
+	NVMEStromDMAChunk	dma_chunks[FLEXIBLE_ARRAY_MEMBER];
+} NVMEStromDMABuffer;
+
+
+
 
 static set_rel_pathlist_hook_type set_rel_pathlist_next;
 static CustomPathMethods	nvmestrom_path_methods;
@@ -54,6 +84,7 @@ static CustomExecMethods	nvmestrom_exec_methods;
 static bool					nvmestrom_enabled;			/* GUC */
 static int					nvmestrom_chunk_size_kb;	/* GUC */
 static int					nvmestrom_buffer_size_kb;	/* GUC */
+static int					nvmestrom_numa_node_mask;	/* GUC */
 static double				nvmestrom_seq_page_cost;	/* GUC */
 static bool					nvmestrom_debug_no_threshold; /* GUC */
 static long					sysconf_pagesize;	/* _SC_PAGESIZE */
@@ -64,17 +95,21 @@ static Oid					nvme_last_tablespace_oid = InvalidOid;
 static bool					nvme_last_tablespace_supported;
 static int					nvme_last_numa_node_id;
 
+#define MAX_NUMNODES		(BITS_PER_BYTE * sizeof(int))
+static shmem_startup_hook_type shmem_startup_next;
+static NVMEStromDMABuffer  *dma_buffers[MAX_NUMNODES];	/* buffer per node */
+
 /*
- * NVMEStromChunkBuffer
+ * __NVMEStromDMAChunk	//to be deprecated
  */
-typedef struct NVMEStromDMAChunk
+typedef struct __NVMEStromDMAChunk
 {
 	unsigned long	dma_task_id;/* handler of DMA task */
 	BlockNumber		block_pos;	/* block number begin to read */
 	unsigned int	num_blocks;	/* number of blocks to read */
 	char		   *chunk_buf;	/* mapped DMA buffer */
 	uint32_t	   *chunk_ids;	/* argument buffer for ioctl command */
-} NVMEStromDMAChunk;
+} __NVMEStromDMAChunk;
 
 /* see storage/smgr/md.c */
 typedef struct _MdfdVec
@@ -123,7 +158,7 @@ typedef struct NVMEStromState {
 	Snapshot	worker_snapshot;/* snapshot that is registered */
 
 	/* state of relation scan */
-	NVMEStromDMAChunk *curr_dchunk;
+	__NVMEStromDMAChunk *curr_dchunk;
 	int			curr_bindex;
 	int			curr_lineoff;
 	HeapTupleData curr_tuple;
@@ -134,7 +169,7 @@ typedef struct NVMEStromState {
 	int			dma_windex;		/* index to write next */
 	int			free_chunks;	/* number of available chunks */
 	Buffer		vm_buffer;		/* buffer for visibility map */
-	NVMEStromDMAChunk dma_chunks[FLEXIBLE_ARRAY_MEMBER];
+	__NVMEStromDMAChunk dma_chunks[FLEXIBLE_ARRAY_MEMBER];
 } NVMEStromState;
 
 /*
@@ -821,7 +856,7 @@ ExecInitNVMEStromLater(NVMEStromState *nss)
 								   dma_buffer, cmd.length);
 		for (i=0; i < nss->num_chunks; i++)
 		{
-			NVMEStromDMAChunk  *dchunk = &nss->dma_chunks[i];
+			__NVMEStromDMAChunk  *dchunk = &nss->dma_chunks[i];
 
 			dchunk->chunk_buf = dma_buffer + (size_t)i * nss->chunk_sz;
 			dchunk->chunk_ids = palloc0(sizeof(uint32_t) *
@@ -851,7 +886,7 @@ ExecInitNVMEStromLater(NVMEStromState *nss)
  */
 static void
 nvmestrom_load_chunk(NVMEStromState *nss,
-					 NVMEStromDMAChunk *dchunk)
+					 __NVMEStromDMAChunk *dchunk)
 {
 	Relation		relation = nss->css.ss.ss_currentRelation;
 	SMgrRelation	smgr = relation->rd_smgr;
@@ -977,7 +1012,7 @@ static bool
 nvmestrom_next_chunk(NVMEStromState *nss)
 {
 	NVMEStromParallelDesc *nsp_desc = nss->nsp_desc;
-	NVMEStromDMAChunk *dchunk;
+	__NVMEStromDMAChunk *dchunk;
 	BlockNumber		block_pos;
 	unsigned int	num_blocks = nss->chunk_sz / BLCKSZ;
 
@@ -1054,7 +1089,7 @@ nvmestrom_next_chunk(NVMEStromState *nss)
 static TupleTableSlot *
 nvmestrom_next_tuple(NVMEStromState *nss)
 {
-	NVMEStromDMAChunk *dchunk = nss->curr_dchunk;
+	__NVMEStromDMAChunk *dchunk = nss->curr_dchunk;
 	Relation		relation = nss->css.ss.ss_currentRelation;
 	TupleTableSlot *slot = nss->css.ss.ss_ScanTupleSlot;
 	HeapTuple		tuple = &nss->curr_tuple;
@@ -1242,6 +1277,218 @@ ExplainNVMEStrom(CustomScanState *node,
 {}
 
 /*
+ * InitNUMANodeMask
+ */
+static void
+InitNUMANodeMask(void)
+{
+	const char *fname = "/sys/devices/system/node/has_memory";
+	FILE	   *filp;
+	int			numa_mask = 0;
+	int			node_id = -1;
+	int			prev_id = -1;
+	int			c;
+
+	/* walk on numa nodes with memory */
+	filp = fopen(fname, "rb");
+	if (!filp)
+		elog(ERROR, "failed on fopen('%s'): %m", fname);
+
+	do {
+		c = fgetc(filp);
+		if (isdigit(c))
+			node_id = (node_id >= 0 ? 10 * node_id + (c - '0') : (c - '0'));
+		else if (c == ',' || c == '\n' || c == EOF)
+		{
+			if (prev_id < 0)
+			{
+				if (node_id < MAX_NUMNODES)
+					numa_mask |= (1 << node_id);
+			}
+			else
+			{
+				while (prev_id <= node_id &&
+					   prev_id <  MAX_NUMNODES)
+					numa_mask |= (1 << prev_id);
+			}
+			node_id = prev_id = -1;
+		}
+		else if (c == '-')
+		{
+			prev_id = node_id;
+			node_id = -1;
+		}
+		else
+		{
+			fclose(filp);
+			elog(ERROR, "unexpected character at %s (%c)", fname, c);
+		}
+	} while (c != '\n' && c != EOF);
+	fclose(filp);
+
+	/* unmask non-existent numa nodes */
+	nvmestrom_numa_node_mask &= numa_mask;
+
+	if (!nvmestrom_numa_node_mask)
+		ereport(ERROR,
+				(errcode(ERRCODE_CONFIG_FILE_ERROR),
+				 errmsg("No availabe NUMA nodes"),
+				 errhint("Check \"nvme_strom.numa_node_mask\" parameter")));
+}
+
+/*
+ * number_of_dma_chunks
+ */
+static inline int
+number_of_dma_chunks(size_t *p_segment_sz, size_t *p_chunk_sz)
+{
+	size_t	segment_sz = ((size_t)nvmestrom_buffer_size_kb << 10);
+	size_t	chunk_sz = ((size_t)nvmestrom_chunk_size_kb << 10);
+	int		nr_nodes;
+
+	nr_nodes = __builtin_popcount(nvmestrom_numa_node_mask);
+	Assert(nr_nodes > 0);
+
+	if (nr_nodes > 1)
+		segment_sz = (segment_sz / nr_nodes) & ~(chunk_sz - 1);
+	if (segment_sz < chunk_sz)
+		ereport(ERROR,
+                (errcode(ERRCODE_CONFIG_FILE_ERROR),
+                 errmsg("DMA buffer size too small"),
+				 errhint("Check \"nvme_strom.buffer_size\" parameter")));
+	*p_segment_sz = segment_sz;
+	*p_chunk_sz = chunk_sz;
+
+	return nr_nodes;
+}
+
+/*
+ * NVMEStromStartupDMABuffer
+ */
+static void
+NVMEStromStartupDMABuffer(void)
+{
+	size_t		segment_sz;
+	size_t		chunk_sz;
+	int			i, j, nr_nodes, nr_chunks;
+	char	   *shmem;
+	bool		found;
+
+	if (shmem_startup_next)
+		shmem_startup_next();
+
+	nr_nodes = number_of_dma_chunks(&segment_sz, &chunk_sz);
+	nr_chunks = segment_sz / chunk_sz;
+
+	shmem = ShmemInitStruct("NVMe-Strom DMA Buffer Head",
+							nr_nodes *
+							MAXALIGN(offsetof(NVMEStromDMABuffer,
+											  dma_chunks[nr_chunks])),
+							&found);
+	if (found)
+		elog(ERROR, "Bug? shared memory for DMA buffer head already exists");
+
+	for (i=0; i < MAX_NUMNODES; i++)
+	{
+		NVMEStromDMABuffer *dmabuf;
+		char	   *hpages;
+
+		if (dma_buffers[i] == NULL)
+			continue;
+		hpages = (char *)dma_buffers[i];
+		dmabuf = (NVMEStromDMABuffer *)shmem;
+		shmem += MAXALIGN(offsetof(NVMEStromDMABuffer,
+								   dma_chunks[nr_chunks]));
+
+		if (sem_init(&dmabuf->sem, 1, nr_chunks))
+			elog(ERROR, "failed on sem_init(3): %m");
+		SpinLockInit(&dmabuf->lock);
+		dlist_init(&dmabuf->free_list);
+		dmabuf->node_id = i;
+		dmabuf->nr_chunks = nr_chunks;
+		for (j=0; j < nr_chunks; j++)
+		{
+			NVMEStromDMAChunk *dchunk = &dmabuf->dma_chunks[j];
+
+			dchunk->buffer = hpages;
+			dlist_push_tail(&dmabuf->free_list, &dchunk->chain);
+
+			hpages += chunk_sz;
+		}
+		dma_buffers[i] = dmabuf;
+	}
+}
+
+/*
+ * NVMEStromInitDMABuffer - init DMA buffer related stuff
+ */
+static void
+NVMEStromInitDMABuffer(void)
+{
+	size_t	segment_sz;
+	size_t	chunk_sz;
+	int		i, nr_nodes, nr_chunks;
+
+	InitNUMANodeMask();
+	nr_nodes = number_of_dma_chunks(&segment_sz, &chunk_sz);
+	nr_chunks = segment_sz / chunk_sz;
+
+	memset(dma_buffers, 0, sizeof(dma_buffers));
+	for (i=0; (nvmestrom_numa_node_mask & ~((1<<i)-1)); i++)
+	{
+		unsigned long nodemask = (1UL << i);
+		int			key;
+		void	   *hpages;
+
+		if ((nvmestrom_numa_node_mask & nodemask) == 0)
+			continue;
+
+		/* bind memory allocation to a particular numa node */
+		if (set_mempolicy(MPOL_BIND /* | MPOL_F_STATIC_NODES */,
+						  &nodemask, MAX_NUMNODES))
+			elog(ERROR, "failed on set_mempolicy(MPOL_BIND): %m");
+
+		/* allocate shared huge-pages */
+		key = shmget(IPC_PRIVATE, segment_sz, 0600 | SHM_HUGETLB);
+		if (key < 0)
+			elog(ERROR, "failed on shmget(2): %m");
+
+		/* attach shared huge-pages */
+		hpages = shmat(key, NULL, 0);
+		if (hpages == (void *)(-1))
+		{
+			int		errno_saved = errno;
+
+			if (shmctl(key, IPC_RMID, NULL) != 0)
+				elog(WARNING, "failed on shmctl(IPC_RMID): %m");
+
+			errno = errno_saved;
+			elog(ERROR, "failed on shmat(2): %m");
+		}
+
+		/* ensure hpages shall be released on process exit */
+		if (shmctl(key, IPC_RMID, NULL) != 0)
+			elog(ERROR, "failed on shmctl(IPC_RMID): %m");
+
+		/*
+		 * NOTE: A little bit abuse of dma_buffers[] pointer; we use it
+		 * to mark valid numa node. Then, startup callback fixup them.
+		 */
+		dma_buffers[i] = hpages;
+	}
+	/* restore memory binding policy */
+	if (set_mempolicy(MPOL_DEFAULT, NULL, 0))
+		elog(ERROR, "failed on set_mempolicy(MPOL_DEFAULT): %m");
+
+	/* request for normal shared memory */
+	RequestAddinShmemSpace(nr_nodes *
+						   MAXALIGN(offsetof(NVMEStromDMABuffer,
+											 dma_chunks[nr_chunks])));
+	shmem_startup_next = shmem_startup_hook;
+	shmem_startup_hook = NVMEStromStartupDMABuffer;
+}
+
+/*
  * Main entrypoint of NVMe-Strom.
  */
 void
@@ -1249,6 +1496,14 @@ _PG_init(void)
 {
 	Size	shared_buffer_size = (Size)NBuffers * (Size)BLCKSZ;
 	int		i;
+
+	/*
+	 * PG-Strom has to be loaded using shared_preload_libraries option
+	 */
+	if (!process_shared_preload_libraries_in_progress)
+		ereport(ERROR,
+				(errcode(ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE),
+		errmsg("NVMe-Strom must be loaded via shared_preload_libraries")));
 
 	/*
 	 * MEMO: Threshold of table's physical size to use NVMe-Strom:
@@ -1281,10 +1536,10 @@ _PG_init(void)
 							"Unit size of userspace mapped DMA buffer",
 							NULL,
 							&nvmestrom_chunk_size_kb,
-							32768,			/* 32MB */
-							BLCKSZ / 1024,	/* 8KB */
+							8192,		/* 8MB */
+							2048,		/* 2MB */
 							INT_MAX,
-							PGC_USERSET,
+							PGC_POSTMASTER,
 							GUC_NOT_IN_SAMPLE | GUC_UNIT_KB,
 							NULL, NULL, NULL);
 	/* nvme_strom.buffer_size */
@@ -1292,13 +1547,23 @@ _PG_init(void)
 							"Total size of userspace mapped DMA buffer",
 							NULL,
 							&nvmestrom_buffer_size_kb,
-							262144,			/* 256MB */
-							BLCKSZ / 1024,	/* 8KB */
+							1048576,	/* 1GB */
+							131072,		/* 128MB */
 							INT_MAX,
-							PGC_USERSET,
+							PGC_POSTMASTER,
 							GUC_NOT_IN_SAMPLE | GUC_UNIT_KB,
 							NULL, NULL, NULL);
-	//TODO: nvme_strom.buffer_size_limit ... default: 2GB
+	/* nvme_strom.numa_node_mask */
+	DefineCustomIntVariable("nvme_strom.numa_node_mask",
+							"Bitmap of available NUMA nodes",
+							NULL,
+							&nvmestrom_numa_node_mask,
+							-1,			/* any numa node */
+							INT_MIN,
+							INT_MAX,
+							PGC_POSTMASTER,
+							GUC_NOT_IN_SAMPLE,
+							NULL, NULL, NULL);
 
 	/* nvme_strom.seq_page_cost */
 	DefineCustomRealVariable("nvme_strom.seq_page_cost",
@@ -1315,7 +1580,7 @@ _PG_init(void)
 
 	/* nvme_strom.debug_no_threshold */
 	DefineCustomBoolVariable("nvme_strom.debug_no_threshold",
-							 "[DEBUG] ignore table size threshold to invoke NVMe-Strom",
+							 "Ignore table size threshold of NVMe-Strom",
 							 NULL,
 							 &nvmestrom_debug_no_threshold,
 							 false,
@@ -1323,8 +1588,8 @@ _PG_init(void)
                              GUC_NOT_IN_SAMPLE,
                              NULL, NULL, NULL);
 
-	if (nvmestrom_chunk_size_kb % (BLCKSZ / 1024) != 0)
-		elog(ERROR, "nvme_strom.chunk_size must be multiple of BLCKSZ");
+	if ((nvmestrom_chunk_size_kb & (nvmestrom_chunk_size_kb - 1)) != 0)
+		elog(ERROR, "nvme_strom.chunk_size must be order of 2");
 	if (nvmestrom_buffer_size_kb % nvmestrom_chunk_size_kb != 0)
 		elog(ERROR, "nvme_strom.buffer_size must be multiple of nvme_strom.chunk_size");
 
@@ -1354,6 +1619,9 @@ _PG_init(void)
 	/* hook registration */
 	set_rel_pathlist_next = set_rel_pathlist_hook;
 	set_rel_pathlist_hook = nvmestrom_add_scan_path;
+
+	/* init DMA buffer related stuff */
+	NVMEStromInitDMABuffer();
 
 	/* misc initialization */
 	for (i=0; i < DMABUFFER_TRACK_HASHSIZE; i++)
