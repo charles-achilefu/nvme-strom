@@ -598,7 +598,10 @@ create_hugepage_dma_buffer(void __user *__uaddr, size_t ulength)
 
 		/* hugetlb should be locked, and hence, prefaulted */
 		if (!pte || pte_none(*pte))
+		{
+			prError("page not found i=%d pte=%p", i, pte);
 			goto page_not_found;
+		}
 
 		page = pte_page(*pte);
 		WARN_ON(!PageHead(page));
