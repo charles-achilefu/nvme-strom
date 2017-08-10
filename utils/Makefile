@@ -1,5 +1,5 @@
 UTILS = nvme_stat ssd2ram_test
-CC_FLAGS = -g -Wall
+CC_FLAGS = -O2 -g -Wall
 
 CUDA_PATH_LIST := /usr/local/cuda /usr/local/cuda-*
 CUDA_PATH := $(shell for x in $(CUDA_PATH_LIST);    \

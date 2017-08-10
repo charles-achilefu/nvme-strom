@@ -185,13 +185,17 @@ strom_get_block(struct inode *inode, sector_t iblock,
 static int
 __extblock_is_supported_nvme(struct block_device *blkdev,
 							 int *p_numa_node_id,
-							 int *p_support_dma64)
+							 int *p_support_dma64,
+							 int *p_sector_sz,
+							 unsigned int *p_max_nsectors)
 {
 	struct gendisk	   *bd_disk = blkdev->bd_disk;
 	struct nvme_ns	   *nvme_ns = (struct nvme_ns *)bd_disk->private_data;
 	struct nvme_ctrl   *nvme_ctrl = nvme_ns->ctrl;
 	struct device	   *this_dev = nvme_ctrl->dev;
 	const char		   *dname;
+	int					sector_sz;
+	unsigned int		max_nsectors;
 	int					rc;
 
 	/* 'devext' is wrapper of NVMe-SSD device */
@@ -247,6 +251,46 @@ __extblock_is_supported_nvme(struct block_device *blkdev,
 		return -ENOTSUPP;
 	}
 
+	/*
+	 * Read h/w sector size of the NVMe-SSD device
+	 * equivalent to /sys/block/nvme?n1/queue/hw_sector_size
+	 */
+	sector_sz = queue_logical_block_size(nvme_ns->queue);
+	if (sector_sz != (1 << nvme_ns->lba_shift))
+	{
+		prError("sector_sz(%d) and lba_shift(%d) are mismatch",
+				sector_sz, nvme_ns->lba_shift);
+		return -ENOTSUPP;
+	}
+	if (p_sector_sz)
+	{
+		if (*p_sector_sz < 0)
+			*p_sector_sz = sector_sz;
+		else if (*p_sector_sz != sector_sz)
+		{
+			prError("NVMe H/W sector size on RAID volume mismatch: %d %d",
+					*p_sector_sz, sector_sz);
+			return -ENOTSUPP;
+		}
+	}
+
+	/*
+	 * Read h/w maximum number of sectors per request
+	 * equivalent to /sys/block/nvme?n1/queue/max_hw_sectors_kb
+	 */
+	max_nsectors = queue_max_hw_sectors(nvme_ns->queue);
+	if (p_max_nsectors)
+	{
+		if (*p_max_nsectors == 0)
+			*p_max_nsectors = max_nsectors;
+		else if (*p_max_nsectors != max_nsectors)
+		{
+			prError("Max numbe of H/W sectors on NVMe SSD mismatch: %u %u",
+					*p_max_nsectors, max_nsectors);
+			return -ENOTSUPP;
+		}
+	}
+
 	/* Inform PCIe topolocy where the SSD device locates on */
 	if (p_numa_node_id)
 	{
@@ -278,6 +322,8 @@ static int
 __mdblock_is_supported_nvme(struct block_device *blkdev,
 							int *p_numa_node_id,
 							int *p_support_dma64,
+							int *p_sector_sz,
+							unsigned int *p_max_nsectors,
 							struct mddev **p_mddev)
 {
 	struct gendisk *bd_disk = blkdev->bd_disk;
@@ -351,7 +397,9 @@ __mdblock_is_supported_nvme(struct block_device *blkdev,
 	{
 		rc = __extblock_is_supported_nvme(rdev->bdev,
 										  p_numa_node_id,
-										  p_support_dma64);
+										  p_support_dma64,
+										  p_sector_sz,
+										  p_max_nsectors);
 		if (rc)
 		{
 			prError("md-device '%s' - disk[%d] is not NVMe-SSD",
@@ -374,6 +422,8 @@ static int
 file_is_supported_nvme(struct file *filp,
 					   int *p_numa_node_id,
 					   int *p_support_dma64,
+					   int *p_sector_sz,
+					   unsigned int *p_max_nsectors,
 					   struct mddev **p_mddev)
 {
 	struct inode	   *f_inode = filp->f_inode;
@@ -453,11 +503,15 @@ file_is_supported_nvme(struct file *filp,
 	if (bd_disk->major == BLOCK_EXT_MAJOR)
 		return __extblock_is_supported_nvme(s_bdev,
 											p_numa_node_id,
-											p_support_dma64);
+											p_support_dma64,
+											p_sector_sz,
+											p_max_nsectors);
 	else if (bd_disk->major == MD_MAJOR)
 		return __mdblock_is_supported_nvme(s_bdev,
 										   p_numa_node_id,
 										   p_support_dma64,
+										   p_sector_sz,
+										   p_max_nsectors,
 										   p_mddev);
 
 	prError("block device '%s' on behalf of the file is not supported",
@@ -477,6 +531,8 @@ ioctl_check_file(StromCmd__CheckFile __user *uarg)
 	struct file	   *filp;
 	int				numa_node_id = -2;
 	int				support_dma64 = 1;
+	int				sector_sz = -1;
+	unsigned int	max_nsectors = 0;
 	int				rc;
 
 	if (copy_from_user(&karg, uarg, sizeof(karg)))
@@ -489,6 +545,8 @@ ioctl_check_file(StromCmd__CheckFile __user *uarg)
 	rc = file_is_supported_nvme(filp,
 								&numa_node_id,
 								&support_dma64,
+								&sector_sz,
+								&max_nsectors,
 								NULL);
 	fput(filp);
 
@@ -585,6 +643,8 @@ strom_create_dma_task(int fdesc,
 	struct mddev		   *mddev = NULL;
 	int						node_id = -2;
 	int						support_dma64 = 1;
+	int						sector_sz = -1;
+	unsigned int			max_nsectors = 0;
 	long					retval;
 	unsigned long			flags;
 
@@ -603,6 +663,8 @@ strom_create_dma_task(int fdesc,
 	retval = file_is_supported_nvme(filp,
 									&node_id,
 									&support_dma64,
+									&sector_sz,
+									&max_nsectors,
 									&mddev);
 	if (retval < 0)
 	{
