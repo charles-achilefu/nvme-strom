@@ -220,6 +220,7 @@ memdump_on_corruption(const char *src_buffer,
 		}
 	}
 	fprintf(stderr, "memory corruption detected\n");
+	abort();
 	exit(1);
 }
 
@@ -281,6 +282,7 @@ exec_test_by_strom(void *private)
 	CUresult		rc;
 	StromCmd__MemCopySsdToGpu uarg;
 	ssize_t			i, j, nbytes;
+	uint32_t		chunk_base;
 	int				rv;
 
 	rc = cuCtxSetCurrent(cuda_context);
@@ -302,8 +304,9 @@ exec_test_by_strom(void *private)
 		uarg.relseg_sz	= 0;
 		uarg.chunk_ids	= wcontext->chunk_ids;
 		uarg.wb_buffer	= wcontext->src_buffer;
+		chunk_base		= next_fpos / BLCKSZ;
 		for (i=0; i < nr_chunks; i++)
-			uarg.chunk_ids[i] = next_fpos / BLCKSZ + i;
+			uarg.chunk_ids[i] = chunk_base + i;
 
 		rv = nvme_strom_ioctl(STROM_IOCTL__MEMCPY_SSD2GPU, &uarg);
 		system_exit_on_error(rv, "STROM_IOCTL__MEMCPY_SSD2GPU");
@@ -316,7 +319,9 @@ exec_test_by_strom(void *private)
 		/* kick RAM-to-GPU DMA, if written back */
 		if (uarg.nr_ram2gpu > 0)
 		{
-			rc = cuMemcpyHtoD(wcontext->dev_buffer,
+			rc = cuMemcpyHtoD(wcontext->dev_buffer +
+							  BLCKSZ * (uarg.nr_chunks -
+										uarg.nr_ram2gpu),
 							  wcontext->src_buffer +
 							  BLCKSZ * (uarg.nr_chunks -
 										uarg.nr_ram2gpu),
@@ -345,9 +350,10 @@ exec_test_by_strom(void *private)
 
 			for (i=0; i < nr_chunks; i++)
 			{
-				j = uarg.chunk_ids[i] % nr_chunks;
-				if (memcmp(wcontext->src_buffer + i * BLCKSZ,
-						   wcontext->dst_buffer + j * BLCKSZ,
+				j = uarg.chunk_ids[i] - chunk_base;
+				assert(j >=0 && j < nr_chunks);
+				if (memcmp(wcontext->dst_buffer + i * BLCKSZ,
+						   wcontext->src_buffer + j * BLCKSZ,
 						   BLCKSZ) != 0)
 				{
 					fprintf(stderr, "i=%zu j=%zu\n", i, j);
