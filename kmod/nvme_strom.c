@@ -1122,6 +1122,7 @@ __submit_async_read_cmd(strom_dma_task *dtask, strom_prps_item *pitem)
 	struct nvme_rw_command *cmd;
 	strom_async_cmd_context *async_cmd_cxt;
 	size_t					length;
+	u32						nvme_page_size = nvme_ctrl->page_size;
 	u16						control = 0;
 	u32						dsmgmt = 0;
 	u32						nblocks;
@@ -1130,15 +1131,14 @@ __submit_async_read_cmd(strom_dma_task *dtask, strom_prps_item *pitem)
 	int						npages;
 
 	/* setup scatter-gather list */
-	length = (dtask->nr_sectors << SECTOR_SHIFT);
-	nblocks = (dtask->nr_sectors << (SECTOR_SHIFT - nvme_ns->lba_shift)) - 1;
+	length = (size_t)dtask->nr_sectors << SECTOR_SHIFT;
+	nblocks = (length >> nvme_ns->lba_shift) - 1;
 	if (nblocks > 0xffff)
 		return -EINVAL;
-	slba = dtask->head_sector << (SECTOR_SHIFT - nvme_ns->lba_shift);
+	slba = (dtask->head_sector << SECTOR_SHIFT) >> nvme_ns->lba_shift;
 
 	prp1 = pitem->prps_list[0];
-	npages = ((prp1 & (nvme_ctrl->page_size - 1)) +
-			  length - 1) / nvme_ctrl->page_size;
+	npages = ((prp1 & (nvme_page_size - 1)) + length - 1) / nvme_page_size;
 	if (npages < 1)
 		prp2 = 0;	/* reserved */
 	else if (npages < 2)
@@ -1385,7 +1385,7 @@ memcpy_from_nvme_ssd(strom_dma_task *dtask,
 	struct nvme_ns *nvme_ns;
 	sector_t		sector;
 	unsigned int	nr_sects;
-	unsigned int	max_nr_sects = (NVMESSD_DMAREQ_MAXSZ >> SECTOR_SHIFT);
+	unsigned int	max_nr_sects = (dtask->dmareq_maxsz >> SECTOR_SHIFT);
 	loff_t			curr_offset = dest_offset;
 	int				i, retval = 0;
 
@@ -1487,12 +1487,13 @@ submit_ssd2gpu_memcpy(strom_dma_task *dtask)
 	mapped_gpu_memory  *mgmem = dtask->mgmem;
 	nvidia_p2p_page_table_t *page_table = mgmem->page_table;
 	struct nvme_ns	   *nvme_ns = dtask->nvme_ns;
+	struct nvme_ctrl   *nvme_ctrl = nvme_ns->ctrl;
 	strom_prps_item	   *pitem;
 	ssize_t				total_nbytes;
 	dma_addr_t			curr_paddr;
 	int					length;
 	int					i, retval;
-	u32					nvme_page_size = nvme_ns->ctrl->page_size;
+	u32					nvme_page_size = nvme_ctrl->page_size;
 	u64					tv1, tv2;
 
 	/* sanity checks */
@@ -1500,7 +1501,7 @@ submit_ssd2gpu_memcpy(strom_dma_task *dtask)
 	WARN_ON(nvme_page_size < PAGE_SIZE);
 
 	total_nbytes = SECTOR_SIZE * dtask->nr_sectors;
-	if (!total_nbytes || total_nbytes > NVMESSD_DMAREQ_MAXSZ)
+	if (!total_nbytes || total_nbytes > dtask->dmareq_maxsz)
 		return -EINVAL;
 	if (dtask->dest_offset < mgmem->map_offset ||
 		dtask->dest_offset + total_nbytes > (mgmem->map_offset +
@@ -1575,7 +1576,7 @@ do_memcpy_ssd2gpu(StromCmd__MemCopySsdToGpu *karg,
 	/* sanity checks */
 	if ((karg->chunk_sz & (PAGE_CACHE_SIZE - 1)) != 0 ||	/* alignment */
 		karg->chunk_sz < PAGE_CACHE_SIZE ||					/* >= 4KB */
-		karg->chunk_sz > NVMESSD_DMAREQ_MAXSZ)				/* <= 128KB */
+		karg->chunk_sz > dtask->dmareq_maxsz)				/* <= HW limit */
 		return -EINVAL;
 
 	dest_offset = mgmem->map_offset + karg->offset;
@@ -2250,7 +2251,7 @@ void __exit nvme_strom_exit(void)
 }
 module_exit(nvme_strom_exit);
 
-MODULE_AUTHOR("KaiGai Kohei <kaigai@kaigai.gr.jp>");
-MODULE_DESCRIPTION("SSD-to-GPU Direct Stream Module");
+MODULE_AUTHOR("KaiGai Kohei <kaigai@heterodb.com>");
+MODULE_DESCRIPTION("SSD-to-GPU/RAM Direct Loading Module");
 MODULE_LICENSE("GPL");
-MODULE_VERSION("0.6");
+MODULE_VERSION("0.7");
