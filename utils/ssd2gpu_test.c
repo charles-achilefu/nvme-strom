@@ -267,8 +267,14 @@ show_throughput(const char *filename, size_t file_size,
 	}
 	if (nr_dma_submit > 0)
 	{
-		printf(", average DMA blocks: %.2f",
-			   (double)nr_dma_blocks / (double)nr_dma_submit);
+		double	avg_dma_sz = ((double)(nr_dma_blocks << 9) /
+							  (double)(nr_dma_submit));
+		if (avg_dma_sz > 4194304.0)
+			printf(", average DMA size: %.1fMB", avg_dma_sz / 1048576.0);
+		else if (avg_dma_sz > 4096.0)
+			printf(", average DMA size: %.1fKB", avg_dma_sz / 1024);
+		else
+			printf(", average DMA size: %.0fb", avg_dma_sz);
 	}
 	putchar('\n');
 }

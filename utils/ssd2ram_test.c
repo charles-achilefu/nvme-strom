@@ -145,8 +145,8 @@ ssd2ram_worker(void *__args__)
 	uint32_t   *chunk_ids;
 	size_t		unitsz = (1UL << 20);	/* 1MB unit size */
 	int			n_units = (buffer_size / unitsz);
-	int			rindex;		/* read index */
-	int			windex;		/* wait index */
+	int			rindex = 0;		/* read index */
+	int			windex = 0;		/* wait index */
 	int			i;
 	long		memcpy_wait = 0;
 	long		nr_ram2ram = 0;
@@ -266,9 +266,16 @@ print_results(long time_ms)
 			   total_nr_ram2ram,
 			   total_nr_ssd2ram);
 	if (total_nr_dma_submit > 0)
-		printf(", avg DMA blocks: %.2f",
-			   (double)total_nr_dma_blocks /
-			   (double)total_nr_dma_submit);
+	{
+		double	avg_dma_sz = ((double)(total_nr_dma_blocks << 9) /
+							  (double)(total_nr_dma_submit));
+		if (avg_dma_sz > 4194304.0)
+			printf(", average DMA size: %.1fMB", avg_dma_sz / 1048576.0);
+		else if (avg_dma_sz > 4096.0)
+			printf(", average DMA size: %.1fKB", avg_dma_sz / 1024);
+		else
+			printf(", average DMA size: %.0fb", avg_dma_sz);
+	}
 	putchar('\n');
 }
 
