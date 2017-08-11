@@ -123,7 +123,7 @@ atomic64_max_return(long newval, atomic64_t *atomic_ptr)
  * whether it is a common specification for all the NVMe-SSD device.
  * Right now, we have 128kB as a default maximum unit size of DMA request.
  */
-#define NVMESSD_DMAREQ_MAXSZ		(128 * 1024)
+#define NVMESSD_DMAREQ_MAXSZ		(512 * 1024)
 
 /* routines for extra symbols */
 #include "extra_ksyms.c"
@@ -186,16 +186,16 @@ static int
 __extblock_is_supported_nvme(struct block_device *blkdev,
 							 int *p_numa_node_id,
 							 int *p_support_dma64,
-							 int *p_sector_sz,
-							 unsigned int *p_max_nsectors)
+							 int *p_nvme_blksz,
+							 size_t *p_dmareq_maxsz)
 {
 	struct gendisk	   *bd_disk = blkdev->bd_disk;
 	struct nvme_ns	   *nvme_ns = (struct nvme_ns *)bd_disk->private_data;
 	struct nvme_ctrl   *nvme_ctrl = nvme_ns->ctrl;
 	struct device	   *this_dev = nvme_ctrl->dev;
 	const char		   *dname;
-	int					sector_sz;
-	unsigned int		max_nsectors;
+	int					nvme_blksz;
+	size_t				dmareq_maxsz;
 	int					rc;
 
 	/* 'devext' is wrapper of NVMe-SSD device */
@@ -255,21 +255,21 @@ __extblock_is_supported_nvme(struct block_device *blkdev,
 	 * Read h/w sector size of the NVMe-SSD device
 	 * equivalent to /sys/block/nvme?n1/queue/hw_sector_size
 	 */
-	sector_sz = queue_logical_block_size(nvme_ns->queue);
-	if (sector_sz != (1 << nvme_ns->lba_shift))
+	nvme_blksz = queue_logical_block_size(nvme_ns->queue);
+	if (nvme_blksz != (1 << nvme_ns->lba_shift))
 	{
-		prError("sector_sz(%d) and lba_shift(%d) are mismatch",
-				sector_sz, nvme_ns->lba_shift);
+		prError("nvme_blksz(%d) and lba_shift(%d) are mismatch",
+				nvme_blksz, nvme_ns->lba_shift);
 		return -ENOTSUPP;
 	}
-	if (p_sector_sz)
+	if (p_nvme_blksz)
 	{
-		if (*p_sector_sz < 0)
-			*p_sector_sz = sector_sz;
-		else if (*p_sector_sz != sector_sz)
+		if (*p_nvme_blksz < 0)
+			*p_nvme_blksz = nvme_blksz;
+		else if (*p_nvme_blksz != nvme_blksz)
 		{
-			prError("NVMe H/W sector size on RAID volume mismatch: %d %d",
-					*p_sector_sz, sector_sz);
+			prError("NVMe HW block size on RAID volume mismatch: %d <-> %d",
+					*p_nvme_blksz, nvme_blksz);
 			return -ENOTSUPP;
 		}
 	}
@@ -278,15 +278,17 @@ __extblock_is_supported_nvme(struct block_device *blkdev,
 	 * Read h/w maximum number of sectors per request
 	 * equivalent to /sys/block/nvme?n1/queue/max_hw_sectors_kb
 	 */
-	max_nsectors = queue_max_hw_sectors(nvme_ns->queue);
-	if (p_max_nsectors)
+	dmareq_maxsz = (size_t)queue_max_hw_sectors(nvme_ns->queue) << 9;
+	if (dmareq_maxsz > NVMESSD_DMAREQ_MAXSZ)
+		dmareq_maxsz = NVMESSD_DMAREQ_MAXSZ;
+	if (p_dmareq_maxsz)
 	{
-		if (*p_max_nsectors == 0)
-			*p_max_nsectors = max_nsectors;
-		else if (*p_max_nsectors != max_nsectors)
+		if (*p_dmareq_maxsz == 0)
+			*p_dmareq_maxsz = dmareq_maxsz;
+		else if (*p_dmareq_maxsz != dmareq_maxsz)
 		{
-			prError("Max numbe of H/W sectors on NVMe SSD mismatch: %u %u",
-					*p_max_nsectors, max_nsectors);
+			prError("Max size of DMA request on NVMe SSD mismatch %zu <-> %zu",
+					*p_dmareq_maxsz, dmareq_maxsz);
 			return -ENOTSUPP;
 		}
 	}
@@ -322,8 +324,8 @@ static int
 __mdblock_is_supported_nvme(struct block_device *blkdev,
 							int *p_numa_node_id,
 							int *p_support_dma64,
-							int *p_sector_sz,
-							unsigned int *p_max_nsectors,
+							int *p_nvme_blksz,
+							size_t *p_dmareq_maxsz,
 							struct mddev **p_mddev)
 {
 	struct gendisk *bd_disk = blkdev->bd_disk;
@@ -398,8 +400,8 @@ __mdblock_is_supported_nvme(struct block_device *blkdev,
 		rc = __extblock_is_supported_nvme(rdev->bdev,
 										  p_numa_node_id,
 										  p_support_dma64,
-										  p_sector_sz,
-										  p_max_nsectors);
+										  p_nvme_blksz,
+										  p_dmareq_maxsz);
 		if (rc)
 		{
 			prError("md-device '%s' - disk[%d] is not NVMe-SSD",
@@ -422,8 +424,8 @@ static int
 file_is_supported_nvme(struct file *filp,
 					   int *p_numa_node_id,
 					   int *p_support_dma64,
-					   int *p_sector_sz,
-					   unsigned int *p_max_nsectors,
+					   int *p_nvme_blksz,
+					   size_t *p_dmareq_maxsz,
 					   struct mddev **p_mddev)
 {
 	struct inode	   *f_inode = filp->f_inode;
@@ -504,14 +506,14 @@ file_is_supported_nvme(struct file *filp,
 		return __extblock_is_supported_nvme(s_bdev,
 											p_numa_node_id,
 											p_support_dma64,
-											p_sector_sz,
-											p_max_nsectors);
+											p_nvme_blksz,
+											p_dmareq_maxsz);
 	else if (bd_disk->major == MD_MAJOR)
 		return __mdblock_is_supported_nvme(s_bdev,
 										   p_numa_node_id,
 										   p_support_dma64,
-										   p_sector_sz,
-										   p_max_nsectors,
+										   p_nvme_blksz,
+										   p_dmareq_maxsz,
 										   p_mddev);
 
 	prError("block device '%s' on behalf of the file is not supported",
@@ -531,8 +533,8 @@ ioctl_check_file(StromCmd__CheckFile __user *uarg)
 	struct file	   *filp;
 	int				numa_node_id = -2;
 	int				support_dma64 = 1;
-	int				sector_sz = -1;
-	unsigned int	max_nsectors = 0;
+	int				nvme_blksz = -1;
+	size_t			dmareq_maxsz = 0;
 	int				rc;
 
 	if (copy_from_user(&karg, uarg, sizeof(karg)))
@@ -545,8 +547,8 @@ ioctl_check_file(StromCmd__CheckFile __user *uarg)
 	rc = file_is_supported_nvme(filp,
 								&numa_node_id,
 								&support_dma64,
-								&sector_sz,
-								&max_nsectors,
+								&nvme_blksz,
+								&dmareq_maxsz,
 								NULL);
 	fput(filp);
 
@@ -583,6 +585,9 @@ struct strom_dma_task
 	struct mddev	   *mddev;
 	/* current focus of the raw NVMe-SSD device */
 	struct nvme_ns	   *nvme_ns;	/* NVMe namespace (=SCSI LUN) */
+	/* some attributes of the above NVMe-SSD */
+	int					nvme_blksz;	/* h/w block size of the NVMe-SSD */
+	size_t				dmareq_maxsz; /* max size of a single DMA request */
 
 	/*
 	 * status of asynchronous tasks
@@ -643,8 +648,8 @@ strom_create_dma_task(int fdesc,
 	struct mddev		   *mddev = NULL;
 	int						node_id = -2;
 	int						support_dma64 = 1;
-	int						sector_sz = -1;
-	unsigned int			max_nsectors = 0;
+	int						nvme_blksz = -1;
+	size_t					dmareq_maxsz = 0;
 	long					retval;
 	unsigned long			flags;
 
@@ -663,8 +668,8 @@ strom_create_dma_task(int fdesc,
 	retval = file_is_supported_nvme(filp,
 									&node_id,
 									&support_dma64,
-									&sector_sz,
-									&max_nsectors,
+									&nvme_blksz,
+									&dmareq_maxsz,
 									&mddev);
 	if (retval < 0)
 	{
@@ -690,6 +695,8 @@ strom_create_dma_task(int fdesc,
     dtask->filp			= filp;
 	dtask->mddev		= mddev;
 	dtask->nvme_ns		= NULL;		/* to be set later */
+	dtask->nvme_blksz	= nvme_blksz;
+	dtask->dmareq_maxsz	= dmareq_maxsz;
     dtask->dma_status	= 0;
     dtask->ioctl_filp	= get_file(ioctl_filp);
 	dtask->dest_offset	= 0;
