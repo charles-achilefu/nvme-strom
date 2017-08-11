@@ -41,7 +41,17 @@
 
 /* determine the target kernel to build */
 #if defined(RHEL_MAJOR) && (RHEL_MAJOR == 7)
-#include "rhel7_local.h"	/* local headers in RHEL7/CentOS7 kernel */
+#if RHEL_MINOR == 3
+#include "rhel_7.3/nvme.h"
+#include "rhel_7.3/md.h"
+#include "rhel_7.3/raid0.h"
+#elif RHEL_MINOR == 4
+#include "rhel_7.4/nvme.h"
+#include "rhel_7.4/md.h"
+#include "rhel_7.4/raid0.h"
+#else
+#error Not a supported Red Hat Enterprise Linux 7.x series
+#endif
 #else
 #error Not a supported Linux Distribution
 #endif
