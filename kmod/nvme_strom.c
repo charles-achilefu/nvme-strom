@@ -1595,9 +1595,9 @@ do_memcpy_ssd2gpu(StromCmd__MemCopySsdToGpu *karg,
 		return -ERANGE;
 
 	i_size = i_size_read(filp->f_inode);
-	for (i=0; i < karg->nr_chunks; i++)
+	for (i=karg->nr_chunks; i > 0; i--)
 	{
-		loff_t			chunk_id = chunk_ids_in[i];
+		loff_t			chunk_id = chunk_ids_in[i-1];
 		loff_t			fpos;
 		struct page	   *fpage;
 		int				score = 0;
@@ -1869,9 +1869,9 @@ do_memcpy_ssd2ram(StromCmd__MemCopySsdToRam *karg,
 		return -EINVAL;
 
 	i_size = i_size_read(f_inode);
-	for (i=0; i < karg->nr_chunks; i++)
+	for (i=karg->nr_chunks; i > 0; i--)
 	{
-		loff_t			chunk_id = chunk_ids[i];
+		loff_t			chunk_id = chunk_ids[i-1];
 		loff_t			fpos;
 		struct page	   *fpage;
 		int				score = 0;

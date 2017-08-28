@@ -312,7 +312,7 @@ exec_test_by_strom(void *private)
 		uarg.wb_buffer	= wcontext->src_buffer;
 		chunk_base		= next_fpos / BLCKSZ;
 		for (i=0; i < nr_chunks; i++)
-			uarg.chunk_ids[i] = chunk_base + i;
+			uarg.chunk_ids[nr_chunks - (i+1)] = chunk_base + i;
 
 		rv = nvme_strom_ioctl(STROM_IOCTL__MEMCPY_SSD2GPU, &uarg);
 		system_exit_on_error(rv, "STROM_IOCTL__MEMCPY_SSD2GPU");

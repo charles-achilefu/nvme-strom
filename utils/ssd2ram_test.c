@@ -204,7 +204,7 @@ ssd2ram_worker(void *__args__)
 		cmd.chunk_ids	= chunk_ids;
 
 		for (i=0; i < cmd.nr_chunks; i++)
-			cmd.chunk_ids[i] = fpos / BLCKSZ + i;
+			cmd.chunk_ids[cmd.nr_chunks - (i+1)] = fpos / BLCKSZ + i;
 
 		if (nvme_strom_ioctl(STROM_IOCTL__MEMCPY_SSD2RAM, &cmd))
 			ELOG(errno, "failed on ioctl(STROM_IOCTL__MEMCPY_SSD2RAM)");
