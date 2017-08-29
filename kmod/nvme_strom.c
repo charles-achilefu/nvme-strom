@@ -128,12 +128,13 @@ atomic64_max_return(long newval, atomic64_t *atomic_ptr)
 	printk(KERN_ERR "nvme-strom: " fmt "\n", ##__VA_ARGS__)
 
 /*
- * NOTE: It looks to us NVMe SSD does not accept DMA request larger than 128kB,
- * according to the execution on Intel 750 SSD, however, we are also uncertain
- * whether it is a common specification for all the NVMe-SSD device.
- * Right now, we have 128kB as a default maximum unit size of DMA request.
+ * NOTE: In our benchmark, DMA block size larger than 128KB has no performance
+ * benefit any more. So, our wired limitation is determined 256KB based on
+ * this heuristics.
+ * Also note that some of NVMe-SSD does not accept DMA block size > 128KB,
+ * like Intel 750 SSD series.
  */
-#define NVMESSD_DMAREQ_MAXSZ		(512 * 1024)
+#define NVMESSD_DMAREQ_MAXSZ		(256 * 1024)
 
 /* routines for extra symbols */
 #include "extra_ksyms.c"
