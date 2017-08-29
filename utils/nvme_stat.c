@@ -59,6 +59,7 @@ print_stat(int loop, StromCmd__StatInfo *p, StromCmd__StatInfo *c,
 	DECL_DIFF(c,p,nr_wait_dtask);
 	DECL_DIFF(c,p,clk_wait_dtask);
 	DECL_DIFF(c,p,nr_wrong_wakeup);
+	DECL_DIFF(c,p,total_dma_length);
 	DECL_DIFF(c,p,nr_debug1);
 	DECL_DIFF(c,p,nr_debug2);
 	DECL_DIFF(c,p,nr_debug3);
@@ -77,7 +78,7 @@ print_stat(int loop, StromCmd__StatInfo *p, StromCmd__StatInfo *c,
 
 	if (loop % 25 == 0)
 	{
-		printf("    avg-dma   avg-prps avg-submit   avg-wait"
+		printf("    avg-dma   avg-prps avg-submit   avg-wait   avg-size"
 			   " bad-wakeup   DMA(cur)   DMA(max)");
 		if (c->has_debug)
 			printf("     debug1     debug2     debug3     debug4");
@@ -87,6 +88,10 @@ print_stat(int loop, StromCmd__StatInfo *p, StromCmd__StatInfo *c,
 	print_mean(nr_setup_prps, clk_setup_prps, clocks_per_sec);
 	print_mean(nr_submit_dma, clk_submit_dma, clocks_per_sec);
 	print_mean(nr_wait_dtask, clk_wait_dtask, clocks_per_sec);
+	if (nr_ssd2gpu == 0)
+		printf("       ----");
+	else
+		printf(" %8lukB", total_dma_length / (1024 * nr_ssd2gpu));
 	printf(" %10lu %10lu %10lu",
 		   nr_wrong_wakeup,
 		   c->cur_dma_count,
@@ -161,18 +166,19 @@ main(int argc, char *argv[])
 		if (nvme_strom_ioctl(STROM_IOCTL__STAT_INFO, &curr_stat))
 			ELOG(errno, "failed on ioctl(STROM_IOCTL__STAT_INFO)");
 
-		printf("tsc:             %lu\n"
-			   "nr_ssd2gpu:      %lu\n"
-			   "clk_ssd2gpu:     %lu\n"
-			   "nr_setup_prps:   %lu\n"
-			   "clk_setup_prps:  %lu\n"
-			   "nr_submit_dma:   %lu\n"
-			   "clk_submit_dma:  %lu\n"
-			   "nr_wait_dtask:   %lu\n"
-			   "clk_wait_dtask:  %lu\n"
-			   "nr_wrong_wakeup: %lu\n"
-			   "cur_dma_count:   %lu\n"
-			   "max_dma_count:   %lu\n",
+		printf("tsc:              %lu\n"
+			   "nr_ssd2gpu:       %lu\n"
+			   "clk_ssd2gpu:      %lu\n"
+			   "nr_setup_prps:    %lu\n"
+			   "clk_setup_prps:   %lu\n"
+			   "nr_submit_dma:    %lu\n"
+			   "clk_submit_dma:   %lu\n"
+			   "nr_wait_dtask:    %lu\n"
+			   "clk_wait_dtask:   %lu\n"
+			   "nr_wrong_wakeup:  %lu\n"
+			   "total_dma_length: %lu\n"
+			   "cur_dma_count:    %lu\n"
+			   "max_dma_count:    %lu\n",
 			   (unsigned long)curr_stat.tsc,
 			   (unsigned long)curr_stat.nr_ssd2gpu,
 			   (unsigned long)curr_stat.clk_ssd2gpu,
@@ -183,17 +189,18 @@ main(int argc, char *argv[])
 			   (unsigned long)curr_stat.nr_wait_dtask,
 			   (unsigned long)curr_stat.clk_wait_dtask,
 			   (unsigned long)curr_stat.nr_wrong_wakeup,
+			   (unsigned long)curr_stat.total_dma_length,
 			   (unsigned long)curr_stat.cur_dma_count,
 			   (unsigned long)curr_stat.max_dma_count);
 		if (curr_stat.has_debug)
-			printf("nr_debug1:       %lu\n"
-				   "clk_debug1:      %lu\n"
-				   "nr_debug2:       %lu\n"
-				   "clk_debug2:      %lu\n"
-				   "nr_debug3:       %lu\n"
-				   "clk_debug3:      %lu\n"
-				   "nr_debug4:       %lu\n"
-				   "clk_debug4:      %lu\n",
+			printf("nr_debug1:        %lu\n"
+				   "clk_debug1:       %lu\n"
+				   "nr_debug2:        %lu\n"
+				   "clk_debug2:       %lu\n"
+				   "nr_debug3:        %lu\n"
+				   "clk_debug3:       %lu\n"
+				   "nr_debug4:        %lu\n"
+				   "clk_debug4:       %lu\n",
 				   (unsigned long)curr_stat.nr_debug1,
 				   (unsigned long)curr_stat.clk_debug1,
 				   (unsigned long)curr_stat.nr_debug2,

@@ -85,6 +85,7 @@ static atomic64_t	stat_clk_submit_dma = ATOMIC64_INIT(0);
 static atomic64_t	stat_nr_wait_dtask = ATOMIC64_INIT(0);
 static atomic64_t	stat_clk_wait_dtask = ATOMIC64_INIT(0);
 static atomic64_t	stat_nr_wrong_wakeup = ATOMIC64_INIT(0);
+static atomic64_t	stat_total_dma_length = ATOMIC64_INIT(0);
 static atomic64_t	stat_cur_dma_count = ATOMIC64_INIT(0);
 static atomic64_t	stat_max_dma_count = ATOMIC64_INIT(0);
 static atomic64_t	stat_nr_debug1 = ATOMIC64_INIT(0);
@@ -1501,6 +1502,7 @@ submit_ssd2gpu_memcpy(strom_dma_task *dtask)
 	struct nvme_ctrl   *nvme_ctrl = nvme_ns->ctrl;
 	strom_prps_item	   *pitem;
 	ssize_t				total_nbytes;
+	ssize_t				__total_nbytes;
 	dma_addr_t			curr_paddr;
 	int					length;
 	int					i, retval;
@@ -1511,7 +1513,7 @@ submit_ssd2gpu_memcpy(strom_dma_task *dtask)
 	Assert(nvme_ns != NULL);
 	WARN_ON(nvme_page_size < PAGE_SIZE);
 
-	total_nbytes = SECTOR_SIZE * dtask->nr_sectors;
+	__total_nbytes = total_nbytes = SECTOR_SIZE * dtask->nr_sectors;
 	if (!total_nbytes || total_nbytes > dtask->dmareq_maxsz)
 		return -EINVAL;
 	if (dtask->dest_offset < mgmem->map_offset ||
@@ -1556,6 +1558,7 @@ submit_ssd2gpu_memcpy(strom_dma_task *dtask)
 		tv2 = rdtsc();
 		atomic64_inc(&stat_nr_submit_dma);
 		atomic64_add((u64)(tv2 > tv1 ? tv2 - tv1 : 0), &stat_clk_submit_dma);
+		atomic64_add(__total_nbytes, &stat_total_dma_length);
 
 		curval = atomic64_inc_return(&stat_cur_dma_count);
 		atomic64_max_return(curval, &stat_max_dma_count);
@@ -1781,6 +1784,7 @@ submit_ssd2ram_memcpy(strom_dma_task *dtask)
 	struct page		   *ppage;
 	strom_prps_item	   *pitem;
 	ssize_t				total_nbytes;
+	ssize_t				__total_nbytes;
 	long				dest_offset;
 	long				i, j, k;
 	int					retval;
@@ -1789,7 +1793,7 @@ submit_ssd2ram_memcpy(strom_dma_task *dtask)
 	WARN_ON(nvme_ctrl->page_size < PAGE_SIZE);
 	WARN_ON((dtask->dest_offset & (PAGE_SIZE - 1)) != 0);
 
-	total_nbytes = SECTOR_SIZE * dtask->nr_sectors;
+	__total_nbytes = total_nbytes = SECTOR_SIZE * dtask->nr_sectors;
 	if (!total_nbytes || total_nbytes > NVMESSD_DMAREQ_MAXSZ)
 		return -EINVAL;
 	if (dtask->dest_offset < 0 ||
@@ -1835,6 +1839,7 @@ submit_ssd2ram_memcpy(strom_dma_task *dtask)
 		tv2 = rdtsc();
 		atomic64_inc(&stat_nr_submit_dma);
 		atomic64_add((u64)(tv2 > tv1 ? tv2 - tv1 : 0), &stat_clk_submit_dma);
+		atomic64_add(__total_nbytes, &stat_total_dma_length);
 
 		curval = atomic64_inc_return(&stat_cur_dma_count);
 		atomic64_max_return(curval, &stat_max_dma_count);
@@ -2051,6 +2056,7 @@ ioctl_stat_info_command(StromCmd__StatInfo __user *uarg)
 	karg.nr_wait_dtask	= atomic64_read(&stat_nr_wait_dtask);
 	karg.clk_wait_dtask	= atomic64_read(&stat_clk_wait_dtask);
 	karg.nr_wrong_wakeup = atomic64_read(&stat_nr_wrong_wakeup);
+	karg.total_dma_length = atomic64_read(&stat_total_dma_length);
 	karg.cur_dma_count	= atomic64_read(&stat_cur_dma_count);
 	karg.max_dma_count	= atomic64_xchg(&stat_max_dma_count, 0UL);
 	if (stat_info == 1)
