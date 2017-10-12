@@ -1167,8 +1167,8 @@ __submit_async_read_cmd(strom_dma_task *dtask, strom_prps_item *pitem)
 	cmd->flags		= 0;	/* we use PRPs, rather than SGL */
 	cmd->command_id	= 0;	/* set by nvme driver later */
 	cmd->nsid		= cpu_to_le32(nvme_ns->ns_id);
-	cmd->prp1		= cpu_to_le64(prp1);
-	cmd->prp2		= cpu_to_le64(prp2);
+	cmd->dptr.prp1	= cpu_to_le64(prp1);
+	cmd->dptr.prp2	= cpu_to_le64(prp2);
 	cmd->metadata	= 0;	/* XXX integrity check, if needed */
 	cmd->slba		= cpu_to_le64(slba);
 	cmd->length		= cpu_to_le16(nblocks);
