@@ -950,7 +950,7 @@ strom_init_prps_item_buffer(void)
 	 * Try to acquire a PCI device which is likely NVMe-SSD.
 	 */
 	dev_driver = driver_find("nvme", &pci_bus_type);
-	if (dev_driver && dev_driver->owner == mod_nvme_alloc_request)
+	if (dev_driver)
 	{
 		strom_prps_device = bus_find_device(&pci_bus_type, NULL,
 											to_pci_driver(dev_driver),
@@ -1144,7 +1144,11 @@ __submit_async_read_cmd(strom_dma_task *dtask, strom_prps_item *pitem)
 	length = (size_t)dtask->nr_sectors << SECTOR_SHIFT;
 	nblocks = (length >> nvme_ns->lba_shift) - 1;
 	if (nblocks > 0xffff)
+	{
+		prError("Bug? nblocks = %u is too large for a single DMA request",
+				(unsigned int)nblocks);
 		return -EINVAL;
+	}
 	slba = (dtask->head_sector << SECTOR_SHIFT) >> nvme_ns->lba_shift;
 
 	prp1 = pitem->prps_list[0];
@@ -1180,7 +1184,12 @@ __submit_async_read_cmd(strom_dma_task *dtask, strom_prps_item *pitem)
 	 */
 
 	/* allocation of the request */
+#ifndef USE_EXTRA__NVME_ALLOC_REQUEST
+	req = nvme_alloc_request(nvme_ns->queue, &async_cmd_cxt->cmd, 0,
+							 NVME_QID_ANY);
+#else
 	req = __nvme_alloc_request(nvme_ns->queue, &async_cmd_cxt->cmd, 0);
+#endif
 	if (IS_ERR(req))
 	{
 		kfree(async_cmd_cxt);

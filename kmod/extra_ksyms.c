@@ -76,7 +76,22 @@ __nvidia_p2p_free_page_table(struct nvidia_p2p_page_table *page_table)
 	return p_nvidia_p2p_free_page_table(page_table);
 }
 
+
 /* nvme_alloc_request */
+#if defined(RHEL_MAJOR) && (RHEL_MAJOR == 7)
+#if RHEL_MINOR == 3
+#if KERNEL_RELEASE_NUM < 693
+/*
+ * MEMO: Linux kernel of RHEL7.3 didn't export nvme_alloc_request at the GA
+ * release, however, its prototype was modified at 3.10.0-693 and exported
+ * for the 3rd party drivers.
+ */
+#define USE_EXTRA__NVME_ALLOC_REQUEST	1
+#endif
+#endif
+#endif
+
+#ifdef USE_EXTRA__NVME_ALLOC_REQUEST
 static struct module *mod_nvme_alloc_request = NULL;
 static struct request *(*p_nvme_alloc_request)(
 	struct request_queue *q,
@@ -90,6 +105,7 @@ __nvme_alloc_request(struct request_queue *q,
 	BUG_ON(!p_nvme_alloc_request);
 	return p_nvme_alloc_request(q, cmd, flags);
 }
+#endif
 
 /* ext4_get_block */
 static struct module *mod_ext4_get_block = NULL;
@@ -198,8 +214,10 @@ static struct notifier_block nvme_strom_nb = {
 static inline void
 strom_put_all_extra_modules(void)
 {
+#ifdef USE_EXTRA__NVME_ALLOC_REQUEST
 	/* nvme */
 	module_put(mod_nvme_alloc_request);
+#endif
 	/* nvidia */
 	module_put(mod_nvidia_p2p_get_pages);
 	module_put(mod_nvidia_p2p_put_pages);
@@ -238,8 +256,10 @@ strom_init_extra_symbols(void)
 			goto cleanup;										\
 	} while(0)
 
+#ifdef USE_EXTRA__NVME_ALLOC_REQUEST
 	/* nvme.ko */
 	LOOKUP_MANDATORY_EXTRA_SYMBOL(nvme_alloc_request);
+#endif
 	/* notifier to get optional extra symbols */
 	rc = register_module_notifier(&nvme_strom_nb);
 	if (rc)
