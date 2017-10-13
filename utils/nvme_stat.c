@@ -88,10 +88,10 @@ print_stat(int loop, StromCmd__StatInfo *p, StromCmd__StatInfo *c,
 	print_mean(nr_setup_prps, clk_setup_prps, clocks_per_sec);
 	print_mean(nr_submit_dma, clk_submit_dma, clocks_per_sec);
 	print_mean(nr_wait_dtask, clk_wait_dtask, clocks_per_sec);
-	if (nr_ssd2gpu == 0)
+	if (nr_submit_dma == 0)
 		printf("       ----");
 	else
-		printf(" %8lukB", total_dma_length / (1024 * nr_ssd2gpu));
+		printf(" %8lukB", total_dma_length / (1024 * nr_submit_dma));
 	printf(" %10lu %10lu %10lu",
 		   nr_wrong_wakeup,
 		   c->cur_dma_count,
