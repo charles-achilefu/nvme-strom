@@ -138,11 +138,16 @@ typedef struct StromCmd__AllocDMABuffer
 } StromCmd__AllocDMABuffer;
 
 /* STROM_IOCTL__STAT_INFO */
+#define NVME_STROM_STATFLAGS__DEBUG		0x0001
 typedef struct StromCmd__StatInfo
 {
 	unsigned int	version;	/* in: = 1, always */
-	unsigned char	has_debug;	/* out: true, if debug fields are valid */
+	unsigned int	flags;		/* in: one of NVME_STROM_STATFLAGS__* */
 	uint64_t		tsc;		/* tsc counter */
+	uint64_t		nr_ioctl_memcpy_submit;		/* MEMCPY_SSD2GPU or */
+	uint64_t		clk_ioctl_memcpy_submit;	/* MEMCPY_SSD2RAM */
+	uint64_t		nr_ioctl_memcpy_wait;		/* MEMCPY_WAIT */
+	uint64_t		clk_ioctl_memcpy_wait;
 	uint64_t		nr_ssd2gpu;
 	uint64_t		clk_ssd2gpu;
 	uint64_t		nr_setup_prps;

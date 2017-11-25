@@ -76,6 +76,10 @@ MODULE_PARM_DESC(verbose, "turn on/off debug message");
 static int	stat_info = 1;
 module_param(stat_info, int, 0644);
 MODULE_PARM_DESC(stat_info, "turn on/off run-time statistics");
+static atomic64_t	stat_nr_ioctl_memcpy_submit = ATOMIC64_INIT(0);
+static atomic64_t	stat_clk_ioctl_memcpy_submit = ATOMIC64_INIT(0);
+static atomic64_t	stat_nr_ioctl_memcpy_wait = ATOMIC64_INIT(0);
+static atomic64_t	stat_clk_ioctl_memcpy_wait = ATOMIC64_INIT(0);
 static atomic64_t	stat_nr_ssd2gpu = ATOMIC64_INIT(0);
 static atomic64_t	stat_clk_ssd2gpu = ATOMIC64_INIT(0);
 static atomic64_t	stat_nr_setup_prps = ATOMIC64_INIT(0);
@@ -2056,6 +2060,10 @@ ioctl_stat_info_command(StromCmd__StatInfo __user *uarg)
 		return -ENODATA;
 
 	karg.tsc			= rdtsc();
+	karg.nr_ioctl_memcpy_submit = atomic64_read(&stat_nr_ioctl_memcpy_submit);
+	karg.clk_ioctl_memcpy_submit =atomic64_read(&stat_clk_ioctl_memcpy_submit);
+	karg.nr_ioctl_memcpy_wait = atomic64_read(&stat_nr_ioctl_memcpy_wait);
+	karg.clk_ioctl_memcpy_wait = atomic64_read(&stat_clk_ioctl_memcpy_wait);
 	karg.nr_ssd2gpu		= atomic64_read(&stat_nr_ssd2gpu);
 	karg.clk_ssd2gpu	= atomic64_read(&stat_clk_ssd2gpu);
 	karg.nr_setup_prps	= atomic64_read(&stat_nr_setup_prps);
@@ -2068,11 +2076,8 @@ ioctl_stat_info_command(StromCmd__StatInfo __user *uarg)
 	karg.total_dma_length = atomic64_read(&stat_total_dma_length);
 	karg.cur_dma_count	= atomic64_read(&stat_cur_dma_count);
 	karg.max_dma_count	= atomic64_xchg(&stat_max_dma_count, 0UL);
-	if (stat_info == 1)
-		karg.has_debug	= 0;
-	else
+	if ((karg.flags & NVME_STROM_STATFLAGS__DEBUG) != 0)
 	{
-		karg.has_debug	= 1;
 		karg.nr_debug1	= atomic64_read(&stat_nr_debug1);
 		karg.clk_debug1	= atomic64_read(&stat_clk_debug1);
 		karg.nr_debug2	= atomic64_read(&stat_nr_debug2);
@@ -2157,6 +2162,8 @@ strom_proc_ioctl(struct file *ioctl_filp,
 				 unsigned long arg)
 {
 	long		retval;
+	u64			tv1 = rdtsc();
+	u64			tv2;
 
 	switch (cmd)
 	{
@@ -2186,14 +2193,35 @@ strom_proc_ioctl(struct file *ioctl_filp,
 
 		case STROM_IOCTL__MEMCPY_SSD2GPU:
 			retval = ioctl_memcpy_ssd2gpu((void __user *) arg, ioctl_filp);
+			if (stat_info)
+			{
+				tv2 = rdtsc();
+				atomic64_inc(&stat_nr_ioctl_memcpy_submit);
+				atomic64_add((u64)(tv2 > tv1 ? tv2 - tv1 : 0),
+							 &stat_clk_ioctl_memcpy_submit);
+			}
 			break;
 
 		case STROM_IOCTL__MEMCPY_SSD2RAM:
 			retval = ioctl_memcpy_ssd2ram((void __user *) arg, ioctl_filp);
+			if (stat_info)
+			{
+				tv2 = rdtsc();
+				atomic64_inc(&stat_nr_ioctl_memcpy_submit);
+				atomic64_add((u64)(tv2 > tv1 ? tv2 - tv1 : 0),
+							 &stat_clk_ioctl_memcpy_submit);
+			}
 			break;
 
 		case STROM_IOCTL__MEMCPY_WAIT:
 			retval = ioctl_memcpy_wait((void __user *) arg, ioctl_filp);
+			if (stat_info)
+			{
+				tv2 = rdtsc();
+				atomic64_inc(&stat_nr_ioctl_memcpy_wait);
+				atomic64_add((u64)(tv2 > tv1 ? tv2 - tv1 : 0),
+							 &stat_clk_ioctl_memcpy_wait);
+			}
 			break;
 
 		case STROM_IOCTL__STAT_INFO:
