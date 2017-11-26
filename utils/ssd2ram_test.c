@@ -143,7 +143,7 @@ ssd2ram_worker(void *__args__)
 	char	   *dma_buffer;
 	unsigned long *dma_tasks;
 	uint32_t   *chunk_ids;
-	size_t		unitsz = (1UL << 20);	/* 1MB unit size */
+	size_t		unitsz = (32UL << 20);	/* 32MB unit size */
 	int			n_units = (buffer_size / unitsz);
 	int			rindex = 0;		/* read index */
 	int			windex = 0;		/* wait index */
