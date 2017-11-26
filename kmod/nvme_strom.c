@@ -42,10 +42,14 @@
 /* determine the target kernel to build */
 #if defined(RHEL_MAJOR) && (RHEL_MAJOR == 7)
 #if RHEL_MINOR == 3
+/* kernel-3.10.0-514 */
+#define RHEL_KERNEL_RELEASE_NUM		(703000 + KERNEL_RELEASE_NUM)
 #include "rhel_7.3/nvme.h"
 #include "rhel_7.3/md.h"
 #include "rhel_7.3/raid0.h"
 #elif RHEL_MINOR == 4
+/* kernel-3.10.0-693 */
+#define RHEL_KERNEL_RELEASE_NUM		(704000 + KERNEL_RELEASE_NUM)
 #include "rhel_7.4/nvme.h"
 #include "rhel_7.4/md.h"
 #include "rhel_7.4/raid0.h"
@@ -1177,8 +1181,13 @@ __submit_async_read_cmd(strom_dma_task *dtask, strom_prps_item *pitem)
 	cmd->flags		= 0;	/* we use PRPs, rather than SGL */
 	cmd->command_id	= 0;	/* set by nvme driver later */
 	cmd->nsid		= cpu_to_le32(nvme_ns->ns_id);
+#if RHEL_KERNEL_RELEASE_NUM < 704000
+	cmd->prp1		= cpu_to_le64(prp1);
+	cmd->prp2		= cpu_to_le64(prp2);
+#else
 	cmd->dptr.prp1	= cpu_to_le64(prp1);
 	cmd->dptr.prp2	= cpu_to_le64(prp2);
+#endif
 	cmd->metadata	= 0;	/* XXX integrity check, if needed */
 	cmd->slba		= cpu_to_le64(slba);
 	cmd->length		= cpu_to_le16(nblocks);

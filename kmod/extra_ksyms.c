@@ -76,19 +76,14 @@ __nvidia_p2p_free_page_table(struct nvidia_p2p_page_table *page_table)
 	return p_nvidia_p2p_free_page_table(page_table);
 }
 
-
 /* nvme_alloc_request */
-#if defined(RHEL_MAJOR) && (RHEL_MAJOR == 7)
-#if RHEL_MINOR == 3
-#if KERNEL_RELEASE_NUM < 693
+#if RHEL_KERNEL_RELEASE_NUM < 704000
 /*
- * MEMO: Linux kernel of RHEL7.3 didn't export nvme_alloc_request at the GA
- * release, however, its prototype was modified at 3.10.0-693 and exported
- * for the 3rd party drivers.
+ * MEMO: RHEL7.3 didn't export nvme_alloc_request(). Then, its interface was
+ * modified at RHEL7.4(kernel-3.10.0-693) and the function gets exported for
+ * 3rd party drivers.
  */
 #define USE_EXTRA__NVME_ALLOC_REQUEST	1
-#endif
-#endif
 #endif
 
 #ifdef USE_EXTRA__NVME_ALLOC_REQUEST
